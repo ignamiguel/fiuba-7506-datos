@@ -1,0 +1,130 @@
+{\rtf1\ansi\ansicpg1252\cocoartf1561\cocoasubrtf200
+{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww10800\viewh8400\viewkind0
+\pard\tx566\tx1133\tx1700\tx2267\tx2834\tx3401\tx3968\tx4535\tx5102\tx5669\tx6236\tx6803\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 #### Ticket\
+[PI-12639](https://appdirect.jira.com/browse/PI-12639)\
+\
+#### Description\
+As explained in the above ticket, the idea is to automatically trigger an automated regression for all the microservices in PI right after the PR Build Job. This should have to be accesible by any microservice in DI with a valid automated suite. In order to achieve this, several changes have been commited and a new Job has been created in PI Jenkins: `remote-trigger-pr-regression-dsl`. This Job triggers an execution against the Hourly Regression Job. It was decided to use this existing Job, because it already supports all the necessary parameters for triggering any execution with any suite.\
+\
+#### Technical Notes\
+Following files have been added:\
+- `remote-trigger-pr-regression-dsl`: new Job has been created in order to trigger executions against the Hourly Regression Job (`appdirect_pr_hr_v2_dsl`). The HR job is included under the *Automation Jenkins* Server. Therefore, we need to trigger the Job manually using an API, with the same logic as existing job in Legacy Jenkins: `appdirect-remote-trigger-pr-hr-dsl`.\
+- `RemoteTriggerPrRegressionSpec.groovy`: new test class has been added to validate the new created job. The content has been copied from the one inside `AppDirectSpec.groovy` called `test config appdirect-remote-trigger-pr-hr-dsl`. \
+- `RemoteTriggerSetupJobDetail`: new class that contains all the necessary information for building the remote jobs (including the new one).\
+\
+Following changes have been applied to existing groovy files:\
+- `autodeskConnector.groovy`: the syntax for the creation was extended, and now requires the regressionSuite and the qaAutoRuntimeArgs as well. Same change must be applied for each Microservice that supports automated suite (*google_connector and docusign_connector*). If the Microservice **DOESN'T** have an automated suite, then no change in the existing files is needed at all.\
+- `appDirect.groovy`: the configuration for the remote jobs is extracted into three different RemoteTriggerSetupJobDetail instances.\
+- `AutodeskConnectorSpec.groovy`: added a new section to verify that autodeskConnector includes a Post Build Action to trigger the new `remote-trigger-pr-regression-dsl` job.\
+\
+Following changes have been applied to existing methods:\
+- `MavenHelper.buildStandardMavenJobs()`: the signature has been extended to include now a `regressionSuite` and `qaAutoRuntimeArgs` as well. These are not mandatory and both default values are an empty String. For the Microservices without any automated suite, the creation syntax didn't change at all, but it did change for automated Microservices (*E.g. autodeskConnector*).\
+- `FreeStyleJob.createRemotePRJobs()`: this method was used to create all the Jobs used as intermediary to trigger external jobs: `appdirect-smoke-tests-pr-dsl`, `appdirect-remote-trigger-pr-hr-dsl` and `appdirect-remote-smoke-tests-backward-compatibility-dsl`. In order to make it clearer and reusable by other groovy scripts, the signature was changed to a new custom configuration class called `RemoteTriggerSetupJobDetail`.\
+- `FreestyleHelper.createQaautoRunnerJob()`: added a new parameter called `executionDescription`, which will be used for the description in the execution in the Github Context. E.g. for Hourly Regression Job it's always `Hourly regression tests passed`, but after this change it will use the executionDescription (when present) or the default one (the defined for each job). When the automated suite is triggered, a different executionDescription will be used (that's the reason for this extension).\
+- `FreestyleHelper.createRemotePRJobs()`: changed the Signature from many parameters to one RemoteTriggerSetupJobDetail instance. Also changed:\
+   - `credentialsBinding`: now used the received as parameter instead of always the same one (monolith-remote-build-api-key - the new Job uses a different credentials set)\
+   - `gitCredentials`: now used the received as parameter instead of always the same one (jenkins-github - the new Job uses a different credentials set)\
+   - `parameters`: now receives a list of parameters and iterates each one of them. The context parameter is added manually at the end of that section.\
+- `MavenJobConfiguration.createPullRequestJob()`: following changes have been applied:\
+   - `regressionSuite` and `qaAutoRuntimeArgs` were added to the Signature. Besides, the following **unused** parameters were removed and put directly inside the configuration file: (*jobNameSuffix, nodeLabel, mavenPhase, mavenProfile, enableSonar*).\
+   - `downstreamJobs` have been added in case that the regressionSuite is not empty. This is the Post Build Action that triggers the new job if the PR Build was successful.\
+\
+#### Tests\
+All tests are passing:\
+![screen shot 2018-04-12 at 10 16 20](https://user-images.githubusercontent.com/28106086/38679730-d5fbbf48-3e3a-11e8-90dc-d68c2b47bf37.png)\
+\
+#### Comparison between PR and Master\
+Some existing Jobs have been modified. Therefore, evidence has been provided comparing the resulting XML files between current branch and master.\
+##### appdirect_pr_hr_v2_dsl\
+We can see that the only differences is the new parameter called `executionDescription` and the replacement of `$\{dockerJobDetail.testType\}` with `\\$\{executionDescription:-Hourly regression\}`. This means that the executionDescription will be used in case that it's specified, or the previous used value when it's empty.\
+```bash\
+diff <(xmllint --c14n Master/appdirect_pr_hr_v2_dsl.xml) <(xmllint --c14n PR/appdirect_pr_hr_v2_dsl.xml)\
+122a123,127\
+>                 <hudson.model.StringParameterDefinition>\
+>                     <name>executionDescription</name>\
+>                     <defaultValue></defaultValue>\
+>                     <description>Description used to report test results to github</description>\
+>                 </hudson.model.StringParameterDefinition>\
+270c275\
+< update_status "$\{JENKINS_GITHUB_TOKEN\}" "AppDirect" "$\{repositoryName\}" "$\{commitId\}" "pending" "$\{BUILD_URL\}" "Hourly regression tests started!" "$\{context\}"\
+---\
+> update_status "$\{JENKINS_GITHUB_TOKEN\}" "AppDirect" "$\{repositoryName\}" "$\{commitId\}" "pending" "$\{BUILD_URL\}" "$\{executionDescription:-Hourly regression\} tests started!" "$\{context\}"\
+481,482c486,487\
+<    update_status "$\{JENKINS_GITHUB_TOKEN\}" "AppDirect" "$\{repositoryName\}" "$\{commitId\}" "success" "$\{BUILD_URL\}" "Hourly regression tests successful! :-D" "$\{context\}"\
+<    send_message "https://hooks.slack.com/services/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" "$\{authorEmail\}" "Hourly regression tests passed for &lt;$\{pullRequestLink\}|PR #$\{pullRequestId\}&gt;. Check the build output on jenkins: &lt;$\{BUILD_URL\}|Build $\{BUILD_DISPLAY_NAME\}&gt;"\
+---\
+>    update_status "$\{JENKINS_GITHUB_TOKEN\}" "AppDirect" "$\{repositoryName\}" "$\{commitId\}" "success" "$\{BUILD_URL\}" "$\{executionDescription:-Hourly regression\} tests successful! :-D" "$\{context\}"\
+>    send_message "https://hooks.slack.com/services/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" "$\{authorEmail\}" "$\{executionDescription:-Hourly regression\} tests passed for &lt;$\{pullRequestLink\}|PR #$\{pullRequestId\}&gt;. Check the build output on jenkins: &lt;$\{BUILD_URL\}|Build $\{BUILD_DISPLAY_NAME\}&gt;"\
+485,486c490,491\
+<    update_status "$\{JENKINS_GITHUB_TOKEN\}" "AppDirect" "$\{repositoryName\}" "$\{commitId\}" "error" "$\{BUILD_URL\}" "Hourly regression tests failed! :-(" "$\{context\}"\
+<    send_message "https://hooks.slack.com/services/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" "$\{authorEmail\}" "Hourly regression tests failed for &lt;$\{pullRequestLink\}|PR #$\{pullRequestId\}&gt;. Check the build output on jenkins: &lt;$\{BUILD_URL\}|Build $\{BUILD_DISPLAY_NAME\}&gt; or refer to &lt;https://appdirect.jira.com/wiki/display/AUT/Troubleshooting+Smoke+tests+failures#TroubleshootingSmoketestsfailures-Smoketestsarefailing-nowwhat|Troubleshooting Smoke tests failures&gt; wiki page."\
+---\
+>    update_status "$\{JENKINS_GITHUB_TOKEN\}" "AppDirect" "$\{repositoryName\}" "$\{commitId\}" "error" "$\{BUILD_URL\}" "$\{executionDescription:-Hourly regression\} tests failed! :-(" "$\{context\}"\
+>    send_message "https://hooks.slack.com/services/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" "$\{authorEmail\}" "$\{executionDescription:-Hourly regression\} tests failed for &lt;$\{pullRequestLink\}|PR #$\{pullRequestId\}&gt;. Check the build output on jenkins: &lt;$\{BUILD_URL\}|Build $\{BUILD_DISPLAY_NAME\}&gt; or refer to &lt;https://appdirect.jira.com/wiki/display/AUT/Troubleshooting+Smoke+tests+failures#TroubleshootingSmoketestsfailures-Smoketestsarefailing-nowwhat|Troubleshooting Smoke tests failures&gt; wiki page."\
+```\
+##### appdirect-remote-smoke-tests-backward-compatibility-dsl\
+We can see that the only differences are the new parameters appended to the API Call (`suite, executionDescription and QAAUTO_RUNTIME_ARGS`). Also modifies the repositoryName with the one passed as parameter or the default one (AppDirect) and the suite to the one passed as parameter or the default one (smoke/appdirect).\
+```bash\
+diff <(xmllint --c14n Master/appdirect-remote-smoke-tests-backward-compatibility-dsl.xml) <(xmllint --c14n PR/appdirect-remote-smoke-tests-backward-compatibility-dsl.xml)\
+83c83\
+<  queueUrl=$(curl -vi -X POST -d "VERSION=$appdirectVersion&amp;LIQUIBASE_VERSION=$liquibaseVersion&amp;QAAUTO_DATABASE_VERSION=$\{QAAUTO_DATABASE_VERSION:-\}&amp;branch=$branch&amp;USE_SAUCELABS=$useSaucelab&amp;repositoryName=AppDirect&amp;pullRequestId=$pullRequestId&amp;commitId=$commitId&amp;authorGithubAccount=$authorGithubAccount&amp;pullRequestLink=$pullRequestLink&amp;context=$context" https://automation.ci.appdirect.tools/job/appdirect_backward_compatibility_smoke_dsl/buildWithParameters --user $monolithUser:$apiKey -H$crumb | grep Location: | sed -e "s|Location: \\([0-9A-Za-z:/.]*\\)|\\1api/json|g" | sed "s/\\\\r//g")\
+---\
+>  queueUrl=$(curl -vi -X POST -d "VERSION=$appdirectVersion&amp;LIQUIBASE_VERSION=$liquibaseVersion&amp;QAAUTO_DATABASE_VERSION=$\{QAAUTO_DATABASE_VERSION:-\}&amp;branch=$branch&amp;USE_SAUCELABS=$useSaucelab&amp;repositoryName=$\{repositoryName:-AppDirect\}&amp;pullRequestId=$pullRequestId&amp;commitId=$commitId&amp;authorGithubAccount=$authorGithubAccount&amp;pullRequestLink=$pullRequestLink&amp;context=$context&amp;suite=$\{suite:-smoke/appdirect\}&amp;executionDescription=$executionDescription&amp;QAAUTO_RUNTIME_ARGS=$QAAUTO_RUNTIME_ARGS" https://automation.ci.appdirect.tools/job/appdirect_backward_compatibility_smoke_dsl/buildWithParameters --user $monolithUser:$apiKey -H$crumb | grep Location: | sed -e "s|Location: \\([0-9A-Za-z:/.]*\\)|\\1api/json|g" | sed "s/\\\\r//g")\
+```\
+##### appdirect-remote-trigger-pr-hr-dsl\
+We can see that the only differences are the new parameters appended to the API Call (`suite, executionDescription and QAAUTO_RUNTIME_ARGS`). Also modifies the repositoryName with the one passed as parameter or the default one (AppDirect) and the suite to the one passed as parameter or the default one (continuous/merge-regression).\
+```bash\
+diff <(xmllint --c14n Master/appdirect-remote-trigger-pr-hr-dsl.xml) <(xmllint --c14n PR/appdirect-remote-trigger-pr-hr-dsl.xml)\
+83c83\
+<  queueUrl=$(curl -vi -X POST -d "VERSION=$appdirectVersion&amp;LIQUIBASE_VERSION=$liquibaseVersion&amp;QAAUTO_DATABASE_VERSION=$\{QAAUTO_DATABASE_VERSION:-\}&amp;branch=$branch&amp;USE_SAUCELABS=$useSaucelab&amp;repositoryName=AppDirect&amp;pullRequestId=$pullRequestId&amp;commitId=$commitId&amp;authorGithubAccount=$authorGithubAccount&amp;pullRequestLink=$pullRequestLink&amp;context=$context" https://automation.ci.appdirect.tools/job/appdirect_pr_hr_v2_dsl/buildWithParameters --user $monolithUser:$apiKey -H$crumb | grep Location: | sed -e "s|Location: \\([0-9A-Za-z:/.]*\\)|\\1api/json|g" | sed "s/\\\\r//g")\
+---\
+>  queueUrl=$(curl -vi -X POST -d "VERSION=$appdirectVersion&amp;LIQUIBASE_VERSION=$liquibaseVersion&amp;QAAUTO_DATABASE_VERSION=$\{QAAUTO_DATABASE_VERSION:-\}&amp;branch=$branch&amp;USE_SAUCELABS=$useSaucelab&amp;repositoryName=$\{repositoryName:-AppDirect\}&amp;pullRequestId=$pullRequestId&amp;commitId=$commitId&amp;authorGithubAccount=$authorGithubAccount&amp;pullRequestLink=$pullRequestLink&amp;context=$context&amp;suite=$\{suite:-continuous/merge-regression\}&amp;executionDescription=$executionDescription&amp;QAAUTO_RUNTIME_ARGS=$QAAUTO_RUNTIME_ARGS" https://automation.ci.appdirect.tools/job/appdirect_pr_hr_v2_dsl/buildWithParameters --user $monolithUser:$apiKey -H$crumb | grep Location: | sed -e "s|Location: \\([0-9A-Za-z:/.]*\\)|\\1api/json|g" | sed "s/\\\\r//g")\
+```\
+##### appdirect-smoke-tests-pr-dsl.xml\
+We can see that the only differences are the new parameters appended to the API Call (`suite, executionDescription and QAAUTO_RUNTIME_ARGS`). Also modifies the repositoryName with the one passed as parameter or the default one (AppDirect) and the suite to the one passed as parameter or the default one (smoke/appdirect).\
+```bash\
+diff <(xmllint --c14n Master/appdirect-remote-smoke-tests-backward-compatibility-dsl.xml) <(xmllint --c14n PR/appdirect-remote-smoke-tests-backward-compatibility-dsl.xml)\
+83c83\
+<  queueUrl=$(curl -vi -X POST -d "VERSION=$appdirectVersion&amp;LIQUIBASE_VERSION=$liquibaseVersion&amp;QAAUTO_DATABASE_VERSION=$\{QAAUTO_DATABASE_VERSION:-\}&amp;branch=$branch&amp;USE_SAUCELABS=$useSaucelab&amp;repositoryName=AppDirect&amp;pullRequestId=$pullRequestId&amp;commitId=$commitId&amp;authorGithubAccount=$authorGithubAccount&amp;pullRequestLink=$pullRequestLink&amp;context=$context" https://automation.ci.appdirect.tools/job/appdirect_backward_compatibility_smoke_dsl/buildWithParameters --user $monolithUser:$apiKey -H$crumb | grep Location: | sed -e "s|Location: \\([0-9A-Za-z:/.]*\\)|\\1api/json|g" | sed "s/\\\\r//g")\
+---\
+>  queueUrl=$(curl -vi -X POST -d "VERSION=$appdirectVersion&amp;LIQUIBASE_VERSION=$liquibaseVersion&amp;QAAUTO_DATABASE_VERSION=$\{QAAUTO_DATABASE_VERSION:-\}&amp;branch=$branch&amp;USE_SAUCELABS=$useSaucelab&amp;repositoryName=$\{repositoryName:-AppDirect\}&amp;pullRequestId=$pullRequestId&amp;commitId=$commitId&amp;authorGithubAccount=$authorGithubAccount&amp;pullRequestLink=$pullRequestLink&amp;context=$context&amp;suite=$\{suite:-smoke/appdirect\}&amp;executionDescription=$executionDescription&amp;QAAUTO_RUNTIME_ARGS=$QAAUTO_RUNTIME_ARGS" https://automation.ci.appdirect.tools/job/appdirect_backward_compatibility_smoke_dsl/buildWithParameters --user $monolithUser:$apiKey -H$crumb | grep Location: | sed -e "s|Location: \\([0-9A-Za-z:/.]*\\)|\\1api/json|g" | sed "s/\\\\r//g")\
+```\
+\
+##### autodesk-connector-pr-dsl\
+Diff command between PR and Master version. We can see that the only differences is the new Post Build action to trigger the `remote-trigger-pr-regression-dsl` job with the required parameters. As explained in the **Observations** the appDirectVersion will remain hardcoded for the moment and the microservice PR Version can be conformed as `$\{RELEASE_VERSION\}-PR$\{ghprbPullId\}-SNAPSHOT`.\
+```bash\
+diff <(xmllint --c14n Master/autodesk-connector-pr-dsl.xml) <(xmllint --c14n PR/autodesk-connector-pr-dsl.xml)\
+133a134,157\
+>         <hudson.plugins.parameterizedtrigger.BuildTrigger>\
+>             <configs>\
+>                 <hudson.plugins.parameterizedtrigger.BuildTriggerConfig>\
+>                     <projects>remote-trigger-pr-regression-dsl</projects>\
+>                     <condition>SUCCESS</condition>\
+>                     <triggerWithNoParameters>false</triggerWithNoParameters>\
+>                     <configs>\
+>                         <hudson.plugins.parameterizedtrigger.PredefinedBuildParameters>\
+>                             <properties>repositoryName=autodesk-connector\
+> appdirectVersion=335-SNAPSHOT\
+> suite=pi/products/autodesk/autodesk_connector\
+> commitId=$\{ghprbActualCommit\}\
+> pullRequestId=$\{ghprbPullId\}\
+> pullRequestLink=$\{ghprbPullLink\}\
+> authorEmail=$\{ghprbActualCommitAuthorEmail\}\
+> authorGithubAccount=$\{ghprbPullAuthorLogin\}\
+> useSaucelab=true\
+> executionDescription=Microservice regression\
+> QAAUTO_RUNTIME_ARGS=-DstartAutodesk=$\{RELEASE_VERSION\}-PR$\{ghprbPullId\}-SNAPSHOT</properties>\
+>                         </hudson.plugins.parameterizedtrigger.PredefinedBuildParameters>\
+>                     </configs>\
+>                 </hudson.plugins.parameterizedtrigger.BuildTriggerConfig>\
+>             </configs>\
+>         </hudson.plugins.parameterizedtrigger.BuildTrigger>\
+```\
+\
+#### Observation\
+The AppDirect version set as parameter in the Post Build Action is hardcoded for the moment. It seems that sending an empty String or `latest` doesn't work in the hourly regression job. So we'll have to find another way to use latest master build from AppDirect (from the microservice perspective, there is no way to identify current AppDirect Master)}

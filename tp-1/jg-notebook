@@ -1,0 +1,86 @@
+%matplotlib inline
+from bokeh.plotting import figure, show
+import string as string
+import datetime as datetime
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut
+geolocator = Nominatim()
+from bokeh.io import output_file, output_notebook, show
+from bokeh.models import (
+  GMapPlot, GMapOptions, ColumnDataSource, Circle, LogColorMapper, BasicTicker, ColorBar,
+    DataRange1d, Range1d, PanTool, WheelZoomTool, BoxSelectTool
+)
+from bokeh.models.mappers import ColorMapper, LinearColorMapper
+from bokeh.palettes import Viridis5
+
+
+plt.style.use('default') ### haciendo los graficos un poco mas bonitos xD
+plt.rcParams['figure.figsize'] = (15, 5)
+
+
+postulantes_educacion = pd.read_csv('/home/pcsor/facu/datos_navent_fiuba/fiuba_1_postulantes_educacion.csv', sep=',', encoding='utf-8', low_memory=False)
+postulantes_genero_edad = pd.read_csv('/home/pcsor/facu/datos_navent_fiuba/fiuba_2_postulantes_genero_y_edad.csv', sep=',', encoding='utf-8', low_memory=False)
+postulaciones = pd.read_csv('/home/pcsor/facu/datos_navent_fiuba/fiuba_4_postulaciones.csv', sep=',', encoding='utf-8', low_memory=False)
+vistas = pd.read_csv('/home/pcsor/facu/datos_navent_fiuba/fiuba_3_vistas.csv', sep=',', encoding='utf-8', low_memory=False)
+avisos_online = pd.read_csv('/home/pcsor/facu/datos_navent_fiuba/fiuba_5_avisos_online.csv', sep=',', encoding='utf-8', low_memory=False)
+avisos_detalles = pd.read_csv('/home/pcsor/facu/datos_navent_fiuba/fiuba_6_avisos_detalle.csv', sep=',', encoding='utf-8', low_memory=False)
+
+
+
+postulantes = postulantes_educacion.join(postulantes_genero_edad.set_index('idpostulante'), on='idpostulante')
+### hago un join usando como indice el idpostulante
+### https://pandas.pydata.org/pandas-docs/stable/generated/pandas.DataFrame.join.html
+
+postulantes.loc[postulantes['sexo'] == 'MASC', 'sexo'] = 'M'
+postulantes.loc[postulantes['sexo'] == 'FEM', 'sexo'] = 'F'
+### Acoto la descripcion del sexo de los postulantes a "M" o "F"
+
+postulantes.to_csv('/home/pcsor/facu/datos_navent_fiuba/postulantes.csv',  index=False)
+### Exporto a un csv
+
+avisos_online['estado'] = 'online'
+### creo un estado para los avisos (online o offline)
+
+avisos = avisos_detalles.join(avisos_online.set_index('idaviso'), on='idaviso')
+### El csv de avisos online lo uno al csv de avisos detalle
+
+avisos['estado'].fillna('offline',inplace=True)
+### Agrego una columna con el estado del aviso, "online" o "offline"
+
+avisos[avisos['idpais'] != 1]
+#### El id pais no tiene sentido usarlo porque hay uno solo.
+
+avisos_detalles.groupby('ciudad')['ciudad'].count()
+#### La informacion de la ciudad esta contenida en la zona
+#### y la columna no aporta nada, tiene muchos datos erroneos
+
+avisos['loc'] = avisos['mapacalle'] + ', ' + avisos['nombre_zona']
+### concateno el mapa de la calle con el nombre de la zona para
+### tenerlo en una sola variable para buscar la localizacion
+
+avisos_detalles.groupby('mapacalle')['mapacalle'].count().sort_values(ascending=False)
+### hay muchas localizaciones las cuales son simplemente barrios en CABA
+### y otras que son confusas.
+
+avisos['coord'] = avisos['loc'].dropna().apply(lambda x: geolocator.geocode(x, timeout = 20))
+### OJO tarda mucho
+### matchea todas las direcciones con coordenadas
+
+avisos['coord'] = avisos['coord'].dropna().apply(lambda x: (x.latitude, x.longitude))
+avisos['lat'], avisos['long'] = avisos['coord'].str.split(',', 1).str
+#### Armo dos columnas con la latitud y la longitud respectivamente
+
+avisos['long'] = avisos['long'].dropna().map(lambda x: str(x)[:-1])
+avisos['lat'] = avisos['lat'].dropna().map(lambda x: str(x)[1:])
+#### doy formato sacando los parentesis
+
+avisos = avisos.drop(['idpais','ciudad','mapacalle','loc','coord'], axis=1)
+#### El id pais no tiene sentido usarlo porque hay uno solo.
+
+avisos.to_csv('/home/pcsor/facu/datos_navent_fiuba/avisos.csv',  index=False) 
+### Exporto a un csv
+
+
